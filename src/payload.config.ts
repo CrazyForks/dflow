@@ -17,6 +17,7 @@ import { Deployments } from './payload/collections/Deployments'
 import { DockerRegistries } from './payload/collections/DockerRegistries'
 import { GitProviders } from './payload/collections/GitProviders'
 import { Projects } from './payload/collections/Projects'
+import { Roles } from './payload/collections/Roles'
 import { SSHKeys } from './payload/collections/SSHkeys'
 import SecurityGroups from './payload/collections/SecurityGroups'
 import { Servers } from './payload/collections/Servers'
@@ -69,7 +70,7 @@ export default buildConfig({
       ),
     },
   },
-  collections: [...collectionsWithHook, Banners],
+  collections: [...collectionsWithHook, Roles, Banners],
   editor: lexicalEditor(),
   secret: process.env.PAYLOAD_SECRET || '',
   typescript: {
@@ -92,6 +93,7 @@ export default buildConfig({
         securityGroups: {},
         projects: {},
         backups: {},
+        roles: {},
       },
       userHasAccessToAllTenants: user => Boolean(user?.role?.includes('admin')),
       enabled: true,

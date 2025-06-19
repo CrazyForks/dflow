@@ -80,6 +80,7 @@ export interface Config {
     dockerRegistries: DockerRegistry;
     tenants: Tenant;
     backups: Backup;
+    roles: Role;
     banners: Banner;
     'payload-jobs': PayloadJob;
     'payload-locked-documents': PayloadLockedDocument;
@@ -108,6 +109,7 @@ export interface Config {
     dockerRegistries: DockerRegistriesSelect<false> | DockerRegistriesSelect<true>;
     tenants: TenantsSelect<false> | TenantsSelect<true>;
     backups: BackupsSelect<false> | BackupsSelect<true>;
+    roles: RolesSelect<false> | RolesSelect<true>;
     banners: BannersSelect<false> | BannersSelect<true>;
     'payload-jobs': PayloadJobsSelect<false> | PayloadJobsSelect<true>;
     'payload-locked-documents': PayloadLockedDocumentsSelect<false> | PayloadLockedDocumentsSelect<true>;
@@ -783,6 +785,38 @@ export interface Template {
 }
 /**
  * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "roles".
+ */
+export interface Role {
+  id: string;
+  tenant?: (string | null) | Tenant;
+  /**
+   * Enter the name of the role.
+   */
+  name: string;
+  projects?: {
+    create?: boolean | null;
+    update?: boolean | null;
+    read?: boolean | null;
+    delete?: boolean | null;
+  };
+  services?: {
+    create?: boolean | null;
+    update?: boolean | null;
+    read?: boolean | null;
+    delete?: boolean | null;
+  };
+  Servers?: {
+    create?: boolean | null;
+    update?: boolean | null;
+    read?: boolean | null;
+    delete?: boolean | null;
+  };
+  updatedAt: string;
+  createdAt: string;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
  * via the `definition` "banners".
  */
 export interface Banner {
@@ -992,6 +1026,10 @@ export interface PayloadLockedDocument {
     | ({
         relationTo: 'backups';
         value: string | Backup;
+      } | null)
+    | ({
+        relationTo: 'roles';
+        value: string | Role;
       } | null)
     | ({
         relationTo: 'banners';
@@ -1472,6 +1510,40 @@ export interface BackupsSelect<T extends boolean = true> {
   backupName?: T;
   status?: T;
   deletedAt?: T;
+  updatedAt?: T;
+  createdAt?: T;
+}
+/**
+ * This interface was referenced by `Config`'s JSON-Schema
+ * via the `definition` "roles_select".
+ */
+export interface RolesSelect<T extends boolean = true> {
+  tenant?: T;
+  name?: T;
+  projects?:
+    | T
+    | {
+        create?: T;
+        update?: T;
+        read?: T;
+        delete?: T;
+      };
+  services?:
+    | T
+    | {
+        create?: T;
+        update?: T;
+        read?: T;
+        delete?: T;
+      };
+  Servers?:
+    | T
+    | {
+        create?: T;
+        update?: T;
+        read?: T;
+        delete?: T;
+      };
   updatedAt?: T;
   createdAt?: T;
 }
