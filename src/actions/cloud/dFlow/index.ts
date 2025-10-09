@@ -2,12 +2,13 @@
 
 import axios from 'axios'
 import { revalidatePath } from 'next/cache'
+import { RequiredDataFromCollection } from 'payload'
 
 import { DFLOW_CONFIG } from '@/lib/constants'
+import { dFlowRestSdk } from '@/lib/restSDK/utils'
 import { protectedClient, publicClient } from '@/lib/safe-action'
-import { CloudProviderAccount } from '@/payload-types'
+import { CloudProviderAccount, Server } from '@/payload-types'
 
-import { VpsPlan } from './types'
 import {
   checkConnectionSchema,
   checkPaymentMethodSchema,
@@ -78,13 +79,10 @@ export const getDFlowPlansAction = publicClient
     actionName: 'getDFlowPlansAction',
   })
   .action(async () => {
-    let vpsPlans: VpsPlan[] = []
-
-    if (DFLOW_CONFIG.URL) {
-      const response = await axios.get(`${DFLOW_CONFIG.URL}/api/vpsPlans`, {})
-
-      vpsPlans = response?.data?.docs ?? []
-    }
+    const { docs: vpsPlans } = await dFlowRestSdk.find({
+      collection: 'vpsPlans',
+      pagination: false,
+    })
 
     return vpsPlans
   })
@@ -101,6 +99,7 @@ export const createVPSOrderAction = protectedClient
       '@/queues/dFlow/addCreateVpsQueue'
     )
 
+    // Check user server creation limit
     if (Number(userTenant.role?.servers?.createLimit) > 0) {
       const { totalDocs } = await payload.count({
         collection: 'servers',
@@ -174,45 +173,108 @@ export const createVPSOrderAction = protectedClient
       )
     }
 
-    const { docs: sshKeys } = await payload.find({
-      collection: 'sshKeys',
-      pagination: false,
-      where: {
-        and: [
-          { id: { in: sshKeyIds } },
-          { 'tenant.slug': { equals: userTenant.tenant?.slug } },
-        ],
-      },
-    })
+    // const { docs: sshKeys } = await payload.find({
+    //   collection: 'sshKeys',
+    //   pagination: false,
+    //   where: {
+    //     and: [
+    //       { id: { in: sshKeyIds } },
+    //       { 'tenant.slug': { equals: userTenant.tenant?.slug } },
+    //     ],
+    //   },
+    // })
 
     // 3. Proceed with VPS creation
     console.log('Payment verified. Triggering VPS creation queue...')
 
-    const createVPSresponse = await addCreateVpsQueue({
-      sshKeys,
-      vps,
-      accountDetails: {
-        id: dFlowAccount.id,
-        accessToken: token,
+    // 3.1 Prepare VPS data for API request
+    const vpsData = {
+      plan: vps.plan,
+      userData: {
+        image: vps.image,
+        ...(vps.license ? { license: vps.license } : {}),
+        product: vps.product,
+        displayName: vps.displayName,
+        region: vps.region,
+        card: '',
+        defaultUser: vps.defaultUser,
+        rootPassword: vps.rootPassword,
+        period: vps.period,
+        plan: vps.plan,
+        addOns: vps.addOns || {},
       },
-      userId: user.id,
-      tenant: userTenant.tenant,
+    }
+
+    console.log(
+      `Creating VPS order with data:`,
+      JSON.stringify(vpsData, null, 2),
+    )
+
+    // 3.2 Call dFlow API to create VPS order
+    const { data: createdVpsOrderRes } = await axios.post(
+      `${DFLOW_CONFIG.URL}/api/vpsOrders`,
+      vpsData,
+      {
+        headers: {
+          Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
+        },
+        timeout: 200000, // 2 mins of timeout!
+      },
+    )
+
+    const { doc: createdVpsOrder } = createdVpsOrderRes
+
+    console.dir({ createdVpsOrder }, { depth: null })
+
+    let serverData: RequiredDataFromCollection<Server> = {
+      name: vps.displayName,
+      description: '',
+      publicIp: createdVpsOrder?.instanceResponse?.ipConfig?.v4?.ip || '',
+      hostname: createdVpsOrder?.instanceResponse?.name || 'pending-hostname',
+      username: 'root',
+      provider: 'dflow',
+      createdBy: user.id,
+      tenant: userTenant.tenant.id,
+      cloudProviderAccount: dFlowAccount.id,
       preferConnectionType: 'tailscale',
+      dflowVpsDetails: {
+        orderId: createdVpsOrder?.id,
+        instanceId: createdVpsOrder?.instanceId,
+        status: createdVpsOrder?.instanceResponse?.status as NonNullable<
+          Server['dflowVpsDetails']
+        >['status'],
+      },
+      cloudInitStatus: 'running',
+      connectionAttempts: 0,
+    }
+
+    console.log({ serverData })
+
+    // 3.3 Save server record in Payload CMS
+    const createdServer = await payload.create({
+      collection: 'servers',
+      data: serverData,
     })
 
-    if (createVPSresponse.id) {
-      console.log('VPS creation process initiated successfully')
+    console.log({ createdServer })
 
-      return {
-        success: true,
-        data: {
-          accountId: dFlowAccount.id,
-          vpsName: vps.displayName,
-          estimatedCost: vps.estimatedCost,
-        },
-        message:
-          'VPS creation process started. You will receive updates on the progress.',
-      }
+    // 3.4 Add job to populate server details (hostname, IP) after creation
+    await addCreateVpsQueue({
+      serverId: createdServer.id,
+      orderId: createdVpsOrder.id,
+      accessToken: token,
+      tenant: userTenant.tenant,
+    })
+
+    return {
+      success: true,
+      data: {
+        orderId: createdVpsOrder.id,
+        serverId: createdServer.id,
+        accountId: dFlowAccount.id,
+        vpsName: vps.displayName,
+        estimatedCost: vps.estimatedCost,
+      },
     }
   })
 
@@ -229,19 +291,11 @@ export const checkPaymentMethodAction = protectedClient
     }
 
     // Fetch user wallet balance
-    const userResponse = await axios.get(`${DFLOW_CONFIG.URL}/api/users`, {
-      headers: {
-        Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
+    const { docs: usersDocs } = await dFlowRestSdk.find(
+      {
+        collection: 'users',
+        limit: 1,
       },
-    })
-
-    const usersData = userResponse.data
-    const userData = usersData.docs.at(0) || {}
-    const walletBalance = userData.wallet || 0
-
-    // Fetch user's payment cards
-    const cardsResponse = await axios.get(
-      `${DFLOW_CONFIG.URL}/api/cards/count`,
       {
         headers: {
           Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
@@ -249,8 +303,22 @@ export const checkPaymentMethodAction = protectedClient
       },
     )
 
-    const cardsData = cardsResponse.data
-    const validCardCount = cardsData.totalDocs || 0
+    const userData = usersDocs.at(0)
+    const walletBalance = userData?.wallet || 0
+
+    // Fetch user's payment cards
+    const { totalDocs } = await dFlowRestSdk.count(
+      {
+        collection: 'cards',
+      },
+      {
+        headers: {
+          Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
+        },
+      },
+    )
+
+    const validCardCount = totalDocs || 0
 
     return {
       walletBalance,
@@ -276,29 +344,25 @@ export const checkAccountConnection = protectedClient
         }
       }
 
-      const userResponse = await axios.get(`${DFLOW_CONFIG.URL}/api/users`, {
-        headers: {
-          Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
+      const userResponse = await dFlowRestSdk.find(
+        {
+          collection: 'users',
+          limit: 1,
         },
-        timeout: 10000, // 10 second timeout
-      })
+        {
+          headers: {
+            Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
+          },
+        },
+      )
 
-      const usersData = userResponse?.data?.docs?.at(0)
+      const usersData = userResponse?.docs?.at(0)
 
       if (!usersData || !usersData.id) {
         return {
           isConnected: false,
           user: null,
           error: 'No user data found or invalid response from dFlow API',
-        }
-      }
-
-      // Additional validation for active user
-      if (usersData.status && usersData.status !== 'active') {
-        return {
-          isConnected: false,
-          user: usersData,
-          error: `Account status is ${usersData.status}. Please ensure your dFlow account is active.`,
         }
       }
 
@@ -437,14 +501,19 @@ export const getDflowUser = protectedClient
     let user = null
 
     try {
-      const response = await axios.get(`${DFLOW_CONFIG.URL}/api/users`, {
-        headers: {
-          Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
+      const response = await dFlowRestSdk.find(
+        {
+          collection: 'users',
+          limit: 1,
         },
-        timeout: 10000,
-      })
+        {
+          headers: {
+            Authorization: `${DFLOW_CONFIG.AUTH_SLUG} API-Key ${token}`,
+          },
+        },
+      )
 
-      user = response?.data?.docs?.[0]
+      user = response?.docs?.[0]
     } catch (error) {
       console.log(
         `Failed to fetch user details with account: ${dflowAccount.id}`,
